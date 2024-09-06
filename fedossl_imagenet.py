@@ -172,6 +172,8 @@ if __name__ == "__main__":
     concat_set = datasets.ConcatDataset((train_label_set, train_unlabel_set))
     labeled_idxs = range(len(train_label_set)) 
     unlabeled_idxs = range(len(train_label_set), len(train_label_set)+len(train_unlabel_set))
+
+
     batch_sampler = datasets.TwoStreamBatchSampler(labeled_idxs, unlabeled_idxs, args.batch_size, int(args.batch_size * len(train_unlabel_set) / (len(train_label_set) + len(train_unlabel_set))))
 
     test_unlabel_set = datasets.ImageNetDataset(root=args.dataset_root, anno_file='./data/ImageNet100_unlabel_50_0.5.txt', transform=transform_test)
