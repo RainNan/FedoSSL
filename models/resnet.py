@@ -9,12 +9,13 @@ from torch.nn import Parameter
 
 __all__ = ['resnet50']
 
+# 生成一个带有padding的3x3卷积层
 def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
-
+# 基本块
 class BasicBlock(nn.Module):
     expansion = 1
 
@@ -46,8 +47,9 @@ class BasicBlock(nn.Module):
 
         return out
 
-
+# 瓶颈块
 class Bottleneck(nn.Module):
+    # expansion 参数为4，表示输出通道数是输入通道数的4倍
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):

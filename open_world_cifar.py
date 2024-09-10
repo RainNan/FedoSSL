@@ -70,22 +70,28 @@ class OPENWORLDCIFAR100(torchvision.datasets.CIFAR100):
         self.data = self.data[idxs, ...]
 
 
+# 1.对cifar10进行划分，有标签的分5个类，剩下5个类为无标签
+# 2.按比例划分有无标签数据
 # 继承自 PyTorch 中 torchvision.datasets.CIFAR10
 class OPENWORLDCIFAR10(torchvision.datasets.CIFAR10):
 
-    # root: 数据存储的路径
-    # labeled: 是否使用标注数据
-    # labeled_num：多少类数据被认为是“标记的”。例如，设置为 5，则意味着使用前 5 类作为标记数据
-    # labeled_ratio: 标记数据的比例
-    # rand_number: 随机数种子
-    # transform 和 target_transform: 数据变换，通常用于数据增强等任务
-    # download: 是否需要下载数据集
-    # unlabeled_idxs: 如果 labeled 为 False，则使用这个索引列表来选择未标记的数据
-    def __init__(self, root, labeled=True, labeled_num=5, labeled_ratio=0.5, rand_number=0, transform=None,
+    def __init__(self,
+                 root,     # root: 数据存储的路径
+                 labeled=True,     # labeled: 是否使用标注数据
+                 labeled_num=5,     # labeled_num：多少类数据被认为是“标记的”。例如，设置为 5，则意味着使用前 5 类作为标记数据
+                 labeled_ratio=0.5,     # labeled_ratio: 标记数据的比例
+                 rand_number=0,     # rand_number: 随机数种子
+                 transform=None,    # transform 和 target_transform: 数据变换，通常用于数据增强等任务
                  target_transform=None,
-                 download=False, unlabeled_idxs=None):
+                 download=False,    # download: 是否需要下载数据集
+                 unlabeled_idxs=None):    # unlabeled_idxs: 如果 labeled 为 False，则使用这个索引列表来选择未标记的数据
+
         # 调用父类的 __init__ 方法，初始化 CIFAR10 数据集的基本参数。
-        super(OPENWORLDCIFAR10, self).__init__(root, True, transform, target_transform, download)
+        super(OPENWORLDCIFAR10, self).__init__(root,
+                                               True,
+                                               transform,
+                                               target_transform,
+                                               download)
 
         # 训练集 train_list
         downloaded_list = self.train_list

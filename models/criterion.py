@@ -1,7 +1,10 @@
+# 损失函数
+
 import torch
 from torch import nn
 import torch.nn.functional as F
 
+# 带有角度惩罚的Softmax损失函数
 
 class AngularPenaltySMLoss(nn.Module):
     def __init__(self, loss_type='cosface', eps=1e-7, s=None, m=None):

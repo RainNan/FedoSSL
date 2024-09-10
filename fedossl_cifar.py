@@ -402,40 +402,82 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
 
 
 def test(args, model, labeled_num, device, test_loader, epoch, tf_writer, client_id, global_round):
+    # 将模型设置为评估模式
     model.eval()
-    preds = np.array([])
-    cluster_preds = np.array([])  # cluster_preds
-    targets = np.array([])
-    confs = np.array([])
+    preds = np.array([])  # 每个样本的类别预测值
+    cluster_preds = np.array([])  # 聚类预测值
+    targets = np.array([])  # 真实标签
+    confs = np.array([])  # 置信度
+
+    # 上下文管理器，它的主要作用是在其作用域内禁用自动梯度计算
     with torch.no_grad():
+        # 将模型中聚类中心的权重矩阵 model.centroids.weight 转置后提取出来
         C = model.centroids.weight.data.detach().clone().T
-        for batch_idx, (x, label) in enumerate(test_loader):
+        for batch_idx, (x, label) in enumerate(test_loader):  # 迭代 batch、数据、标签
             x, label = x.to(device), label.to(device)
+
+            # output 模型的输出（通常是分类任务中的未归一化得分，称为 logits）
+            # feat 特征向量
             output, feat = model(x)
+
+            # 用于将 output 转换为概率分布
             prob = F.softmax(output, dim=1)
+
+            # conf 最大类别的概率值，即置信度
+            # pred 最大类别的概率值对应的索引
             conf, pred = prob.max(1)
+
             # cluster pred
+            # 特征向量 feat 在维度 1 上标准化
             Z1 = F.normalize(feat, dim=1)
+
             cZ1 = Z1 @ C
+
+            # tP1 是样本对于每个聚类中心的归一化得分
             tP1 = F.softmax(cZ1 / model.T, dim=1)
+
+            # 找到每个样本对应的最大聚类得分的索引
+            # cluster_pred：模型对每个样本所属聚类的预测索引
             _, cluster_pred = tP1.max(1)  # return #1: max data    #2: max data index
             #
+
+            # 将当前批次的真实标签转换为 NumPy 数组，并追加到 targets 数组中
             targets = np.append(targets, label.cpu().numpy())
+            # 将当前批次的分类预测结果（pred）转换为 NumPy 数组，并追加到 preds 数组中
             preds = np.append(preds, pred.cpu().numpy())
+            # 同理
             cluster_preds = np.append(cluster_preds, cluster_pred.cpu().numpy())
+            # 同理
             confs = np.append(confs, conf.cpu().numpy())
+
+    #  NumPy 数组转换为整型
     targets = targets.astype(int)
     preds = preds.astype(int)
     cluster_preds = cluster_preds.astype(int)
 
+    # 【掩码】由 True 或 False 组成，表示哪些元素应被选中或处理，哪些元素应被忽略
+    # seen_mask 是一个布尔掩码，用于标记哪些样本属于已经标注过的类别
+    # targets < labeled_num 表示：将 targets 中小于 labeled_num 的标签标记为 True，这意味着这些样本属于已经标注的类别。
     seen_mask = targets < labeled_num
+    # unseen_mask 是一个布尔掩码，表示哪些样本属于未标注的类别。
+    # ~seen_mask 是对 seen_mask 的按位取反操作，将 True 变为 False，False 变为 True，这样就标记出那些属于未标注类别的样本。
     unseen_mask = ~seen_mask
     ## preds <-> cluster_preds ##
+
+    # 原始的 preds
+    # preds: 这个变量是模型对测试数据的预测结果，表示模型对每个样本的分类预测
     origin_preds = preds
     # preds = cluster_preds
     ## local_unseen_mask (4) ##
+
+    # 这里生成了一个布尔掩码 local_unseen_mask_4
+    # 用于标记 targets 中那些标签为 4 的样本（即属于类别 4 的样本）。这个掩码用来选择属于该类别的样本
     local_unseen_mask_4 = targets == 4
+    # 用上一步生成的掩码，提取 preds 和 targets 中对应类别 4 的预测和真实标签。
+    # cluster_acc 是一个函数，用来计算给定预测结果和真实标签之间的准确率。
+    # local_unseen_acc_4 保存了类别 4 的聚类准确率。
     local_unseen_acc_4 = cluster_acc(preds[local_unseen_mask_4], targets[local_unseen_mask_4])
+
     ## local_unseen_mask (4) ##
     local_unseen_mask_5 = targets == 5
     local_unseen_acc_5 = cluster_acc(preds[local_unseen_mask_5], targets[local_unseen_mask_5])
@@ -456,19 +498,30 @@ def test(args, model, labeled_num, device, test_loader, epoch, tf_writer, client
     global_unseen_acc = cluster_acc(preds[global_unseen_mask], targets[global_unseen_mask])
     ##
     # overall_acc = cluster_acc(preds, targets)
+
+    # 整体准确率 overall_acc
+    # 加权的整体准确率 w_overall_acc
     overall_acc, w_overall_acc = cluster_acc_w(origin_preds, targets)
     if ((args.epochs * global_round + epoch) % 10 == 0) and (client_id == 0):
+        # 每 10 个 epoch 并且在第一个客户端（client_id == 0）打印一次 w_overall_acc
         print("w_overall_acc: ", w_overall_acc)
     # cluster_acc
+    # 基于聚类预测的整体准确率 overall_cluster_acc
     overall_cluster_acc = cluster_acc(cluster_preds, targets)
     #
     # seen_acc = accuracy(preds[seen_mask], targets[seen_mask])
+    # 已见类准确率
     seen_acc = accuracy(origin_preds[seen_mask], targets[seen_mask])
     #
+    # 未见类准确率 和 加权未见类准确率
     unseen_acc, w_unseen_acc = cluster_acc_w(preds[unseen_mask], targets[unseen_mask])
     if ((args.epochs * global_round + epoch) % 10 == 0) and (client_id == 0):
         print("w_unseen_acc: ", w_unseen_acc)
+
+    # 计算未见类的 归一化互信息得分（NMI）
+    # metrics.normalized_mutual_info_score NMI 是一个常用于聚类的指标，用于衡量聚类结果与真实标签的相似性
     unseen_nmi = metrics.normalized_mutual_info_score(targets[unseen_mask], preds[unseen_mask])
+    # 计算模型预测的平均不确定性 mean_uncert
     mean_uncert = 1 - np.mean(confs)
     print(
         'epoch {}, Client id {}, Test overall acc {:.4f}, Test overall cluster acc {:.4f}, seen acc {:.4f}, unseen acc {:.4f}, local_unseen acc {:.4f}, global_unseen acc {:.4f}'.format(
@@ -520,7 +573,7 @@ def main():
     parser.add_argument('--labeled-num', default=50, type=int)  # 标记样本的数量
     parser.add_argument('--labeled-ratio', default=0.5, type=float)  # 标记样本的比例
     parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')  # 随机数种子
-    parser.add_argument('--name', type=str, default='debug')  # 实验的名称
+    parser.add_argument('--name', type=str, default='debug')  # 实验的名称，tfwriter保存在 /results/dubug
     parser.add_argument('--exp_root', type=str, default='./results/')  # 实验结果的存储目录
     parser.add_argument('--epochs', type=int, default=5)  # 每轮训练的次数
     parser.add_argument('-b', '--batch-size', default=512, type=int,

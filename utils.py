@@ -101,6 +101,7 @@ def cluster_acc(y_pred, y_true):
 #     return w[row_ind, col_ind].sum() / y_pred.size, w
 
 def cluster_acc_w(y_pred, y_true):
+    # 使用 线性分配算法 来计算聚类的加权准确率
     """
     Calculate clustering accuracy. Require scikit-learn installed.
     # Arguments
