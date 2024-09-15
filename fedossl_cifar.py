@@ -1,3 +1,4 @@
+# fedossl
 import sys
 import copy
 import argparse
@@ -10,6 +11,7 @@ import torch.optim as optim
 import models
 import open_world_cifar as datasets
 import client_open_world_cifar as client_datasets
+from OpenLDN.base.models.build_model import build_model
 from utils import cluster_acc, AverageMeter, entropy, MarginLoss, accuracy, TransformTwice, cluster_acc_w
 from sklearn import metrics
 import numpy as np
@@ -63,7 +65,7 @@ def aggregate_parameters():
         add_parameters(w, client_model)
 
 
-def train(args, model, device, train_label_loader, train_unlabel_loader, optimizer, m, epoch, tf_writer, client_id,
+def train2(args, model, device, train_label_loader, train_unlabel_loader, optimizer, m, epoch, tf_writer, client_id,
           global_round):
     # 初始化模型中的局部标记聚类中心为零。
     model.local_labeled_centroids.weight.data.zero_()  # model.local_labeled_centroids.weight.data: torch.Size([10, 512])
@@ -179,6 +181,7 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
         # 先复制 reg_prob reg_prob2 （无标签数据的概率分布）
         copy_reg_prob1 = copy.deepcopy(reg_prob.detach())
         copy_reg_prob2 = copy.deepcopy(reg_prob2.detach())
+
         # np.argmax(..., axis=1)：对每个样本的概率分布，在类别维度上（axis=1）找到最大概率值对应的索引
         # 这个索引即为模型对该样本预测的类别【伪标签】
         # 在 np.argmax 函数中，axis=1 表示沿着某个特定的维度进行操作
@@ -206,16 +209,18 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
         L_reg1 = L_reg1 / len(reg_label1)
         L_reg2 = L_reg2 / len(reg_label2)
         #### Ours loss end
-        ## 欧氏距离 ########################################################################
+
+        # 欧氏距离
         # C = model.centroids.weight.data.detach().clone()
         # Z1 = feat.detach()
         # Z2 = feat2.detach()
         # cZ1 = euclidean_dist(Z1, C)
         # cZ2 = euclidean_dist(Z2, C)
 
-        ## Cluster loss begin (Orchestra)
+
+        ## Cluster loss begin (Orchestra)##################################################
         # 聚类损失开始（Orchestra算法）
-        # cos-similarity ###############################
+        # cos-similarity 余弦相似度
         # 计算模型特征和聚类中心之间的【余弦相似度】
         # .T 是转置操作，它将张量的形状从 [num_classes, feature_dim] 变为 [feature_dim, num_classes]
         C = model.centroids.weight.data.detach().clone().T
@@ -252,9 +257,9 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
         # L_cluster = - torch.sum(tP1 * logpZ2, dim=1).mean()
         # print("L_cluster: ", L_cluster)
         ## Cluster loss end (Orchestra)
-        # 聚类损失结束（Orchestra算法）
+        # 聚类损失结束（Orchestra算法）########################################################
 
-        ### 统计 cluster_pred (伪标签，cluster id) 置信度 ###
+        ### 统计 cluster_pred (伪标签，cluster id) 置信度 #####################################
         # 记录每个类别的置信度
         confidence_list = [0 for _ in range(10)]
         # 记录每个类别中被分配的样本数量
@@ -326,6 +331,7 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
         pos_pairs.extend(pos_idx)  # pos_pairs size: [512,1]
 
         # bce + L_cluster
+
         cluster_pos_prob = tP2[pos_pairs, :]  # cluster_pos_prob size: [512,10]
         # bce
         # cluster_pos_sim = torch.bmm(tP1.view(args.batch_size, 1, -1), cluster_pos_prob.view(args.batch_size, -1, 1)).squeeze()
@@ -399,6 +405,176 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
     tf_writer.add_scalars('client{}/loss'.format(client_id), {"ce": ce_losses.avg}, args.epochs * global_round + epoch)
     tf_writer.add_scalars('client{}/loss'.format(client_id), {"entropy": entropy_losses.avg},
                           args.epochs * global_round + epoch)
+
+
+
+
+
+def train(args, model, device, train_label_loader, train_unlabel_loader, optimizer, m, epoch, tf_writer, client_id,
+          global_round, simnet=None, optimizer_simnet=None):  # 增加simnet和optimizer_simnet
+    # 初始化模型中的局部标记聚类中心为零。
+    model.local_labeled_centroids.weight.data.zero_()  # model.local_labeled_centroids.weight.data: torch.Size([10, 512])
+
+    # 记录【每个类别】的标记样本数
+    labeled_samples_num = [0 for _ in range(10)]
+
+    # 将模型设置为“训练模式”
+    model.train()
+
+    # 使用二元交叉熵损失
+    bce = torch.nn.BCELoss()
+
+    m = min(m, 0.5)
+    ce = MarginLoss(m=-1 * m)
+
+    # 未标记数据的交叉熵损失
+    unlabel_ce = MarginLoss(m=0)
+    # 未标记数据加载器，使用 cycle 生成一个无限循环的迭代器。
+    unlabel_loader_iter = cycle(train_unlabel_loader)
+
+    # 初始化损失计量器
+    bce_losses = AverageMeter('bce_loss', ':.4e')
+    ce_losses = AverageMeter('ce_loss', ':.4e')
+    entropy_losses = AverageMeter('entropy_loss', ':.4e')
+
+    # OpenLDN部分：初始化成对相似性损失
+    losses_pair = AverageMeter('pair_loss', ':.4e')  # 成对相似性损失
+
+    np_cluster_preds = np.array([])  # 聚类预测
+    np_unlabel_targets = np.array([])
+
+    # 开始训练
+    for batch_idx, ((x, x2), target) in enumerate(train_label_loader):
+        # 各个类的不确定性权重（固定值）
+        beta = 0.2
+        Nk = [1600 * 5, 1600 * 5, 1600 * 5, 1600 * 5, 1600 * 5, 1600 * 5, 1600, 1600, 1600, 1600]
+        Nmax = 1600 * 5
+        p_weight = [beta ** (1 - Nk[i] / Nmax) for i in range(10)]
+
+        # 从无标签加载器中获取数据
+        ((ux, ux2), unlabel_target) = next(unlabel_loader_iter)
+
+        # 拼接张量
+        x = torch.cat([x, ux], 0)
+        x2 = torch.cat([x2, ux2], 0)
+
+        labeled_len = len(target)
+        x, x2, target = x.to(device), x2.to(device), target.to(device)
+
+        optimizer.zero_grad()
+
+        # 前向传播
+        output, feat = model(x)
+        output2, feat2 = model(x2)
+
+        prob = F.softmax(output, dim=1)
+        reg_prob = F.softmax(output[labeled_len:], dim=1)  # 无标签数据的概率
+        prob2 = F.softmax(output2, dim=1)
+        reg_prob2 = F.softmax(output2[labeled_len:], dim=1)
+
+        # 更新局部标记聚类中心
+        for feature, true_label in zip(feat[:labeled_len].detach().clone(), target):
+            labeled_samples_num[true_label] += 1
+            model.local_labeled_centroids.weight.data[true_label] += feature
+
+        for idx, (feature_centroid, num) in enumerate(
+                zip(model.local_labeled_centroids.weight.data, labeled_samples_num)):
+            if num > 0:
+                model.local_labeled_centroids.weight.data[idx] = feature_centroid / num
+
+        # 生成伪标签
+        copy_reg_prob1 = copy.deepcopy(reg_prob.detach())
+        copy_reg_prob2 = copy.deepcopy(reg_prob2.detach())
+
+        reg_label1 = np.argmax(copy_reg_prob1.cpu().numpy(), axis=1)
+        reg_label2 = np.argmax(copy_reg_prob2.cpu().numpy(), axis=1)
+
+        for idx, (label, oprob) in enumerate(zip(reg_label1, copy_reg_prob1)):
+            copy_reg_prob1[idx][label] = 1
+        for idx, (label, oprob) in enumerate(zip(reg_label2, copy_reg_prob2)):
+            copy_reg_prob2[idx][label] = 1
+
+        # L1正则化损失
+        L1_loss = torch.nn.L1Loss()
+        L_reg1 = 0.0
+        L_reg2 = 0.0
+        for idx, (ooutput, otarget, label) in enumerate(zip(reg_prob, copy_reg_prob1, reg_label1)):
+            L_reg1 = L_reg1 + L1_loss(reg_prob[idx], copy_reg_prob1[idx]) * p_weight[label]
+        for idx, (ooutput, otarget, label) in enumerate(zip(reg_prob2, copy_reg_prob2, reg_label2)):
+            L_reg2 = L_reg2 + L1_loss(reg_prob2[idx], copy_reg_prob2[idx]) * p_weight[label]
+        L_reg1 = L_reg1 / len(reg_label1)
+        L_reg2 = L_reg2 / len(reg_label2)
+
+        ## OpenLDN新增部分 ##
+        # 双层优化（Bi-level optimization）中，创建一个中间模型 model_
+        model_, _ = build_model(args)  # 从OpenLDN中创建一个新模型
+        model_ = model_.cuda()
+        model_.load_state_dict(model.state_dict())  # 同步参数
+
+        feat_, logits_ = model_(x)
+        logits_ = F.softmax(logits_, dim=1)
+        feat_ = F.normalize(feat_, dim=1)
+
+        # 计算成对相似性损失
+        feats = torch.cat((feat_[:labeled_len], feat2[:labeled_len]), dim=0)
+        sim_feat = simnet(feats)  # 使用simnet计算成对相似性损失
+        loss_pair = F.mse_loss(F.softmax(output[:labeled_len]), sim_feat)
+
+        # OpenLDN 更新simnet优化器
+        optimizer_simnet.zero_grad()
+        loss_pair.backward(retain_graph=True)  # 反向传播成对相似性损失
+        optimizer_simnet.step()
+
+        ## OpenLDN新增部分结束 ##
+
+        # 原有的FedoSSL部分
+        pos_prob = prob2[:labeled_len]
+        pos_sim = torch.bmm(prob.view(args.batch_size, 1, -1), pos_prob.view(args.batch_size, -1, 1)).squeeze()
+        ones = torch.ones_like(pos_sim)
+        bce_loss = bce(pos_sim, ones)
+        ce_loss = ce(output[:labeled_len], target)
+
+        # 总损失计算
+        if global_round > 4:  # 根据轮次调整损失计算
+            if global_round > 6:
+                loss = - entropy(torch.mean(prob, 0)) + ce_loss + bce_loss + 0.5 * loss_pair + unlabel_ce(output[labeled_len:], reg_label1)
+            else:
+                loss = - entropy(torch.mean(prob, 0)) + ce_loss + bce_loss + 0.5 * loss_pair
+        else:
+            loss = - entropy(torch.mean(prob, 0)) + ce_loss + bce_loss
+
+        # 反向传播与优化
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # 更新损失
+        bce_losses.update(bce_loss.item(), args.batch_size)
+        ce_losses.update(ce_loss.item(), args.batch_size)
+        entropy_losses.update(entropy(torch.mean(prob, 0)).item(), args.batch_size)
+        losses_pair.update(loss_pair.item(), args.batch_size)  # 更新成对相似性损失
+
+    np_cluster_preds = np_cluster_preds.astype(int)
+    unlabel_acc, w_unlabel_acc = cluster_acc_w(np_cluster_preds, np_unlabel_targets)
+    print("unlabel_acc: ", unlabel_acc)
+    print("w_unlabel_acc: ", w_unlabel_acc)
+    print("unlabel target: ", unlabel_target)
+    # sys.exit(0)
+
+    tf_writer.add_scalar('client{}/loss/bce'.format(client_id), bce_losses.avg, args.epochs * global_round + epoch)
+    tf_writer.add_scalar('client{}/loss/ce'.format(client_id), ce_losses.avg, args.epochs * global_round + epoch)
+    tf_writer.add_scalar('client{}/loss/entropy'.format(client_id), entropy_losses.avg,
+                         args.epochs * global_round + epoch)
+    tf_writer.add_scalars('client{}/loss'.format(client_id), {"bce": bce_losses.avg},
+                          args.epochs * global_round + epoch)
+    tf_writer.add_scalars('client{}/loss'.format(client_id), {"ce": ce_losses.avg}, args.epochs * global_round + epoch)
+    tf_writer.add_scalars('client{}/loss'.format(client_id), {"entropy": entropy_losses.avg},
+                          args.epochs * global_round + epoch)
+
+
+
+
+
 
 
 def test(args, model, labeled_num, device, test_loader, epoch, tf_writer, client_id, global_round):
@@ -579,6 +755,13 @@ def main():
     parser.add_argument('-b', '--batch-size', default=512, type=int,
                         metavar='N',
                         help='mini-batch size')  # mini-batch 的大小
+
+    parser.add_argument('--arch',type=str,default='resnet18')
+    parser.add_argument('--no-class', default=10, type=int, help='total classes')  # 注意这里的no-class代表的是类别总数
+
+
+
+
     args = parser.parse_args()  # 解析命令行输入的参数，并将其存储在 args 对象中
 
     # GPU
@@ -926,6 +1109,14 @@ def main():
     ## Start FedAvg training ##
     # 开始 FedAvg 训练
     # 全局训练轮次循环
+
+    '''
+    新增
+    '''
+    _, simnet = build_model(args)
+    simnet = simnet.cuda()
+    optimizer_simnet = torch.optim.Adam(simnet.params(), lr=0.001)
+
     for global_round in range(args.global_rounds):
         print(" Start global_round {}: ".format(global_round))
         # 本地客户端循环
@@ -938,7 +1129,7 @@ def main():
                 # 训练客户端模型
                 train(args, clients_model[client_id], device, client_train_label_loader[client_id],
                       client_train_unlabel_loader[client_id], clients_optimizer[client_id], mean_uncert, epoch,
-                      tf_writer, client_id, global_round)
+                      tf_writer, client_id, global_round,simnet,optimizer_simnet)
                 # 学习率调度，调整学习率
                 clients_scheduler[client_id].step()
             # local_clustering #

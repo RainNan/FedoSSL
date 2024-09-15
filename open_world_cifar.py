@@ -123,6 +123,7 @@ class OPENWORLDCIFAR10(torchvision.datasets.CIFAR10):
         # 使用 rand_number 设置随机种子，以保证每次运行时数据划分的一致性
         np.random.seed(rand_number)
 
+        # shrink_data 根据传入的索引，缩小 self.data 和 self.targets 的范围。只保留指定索引的样本，用于后续的训练。
         if labeled:
             self.labeled_idxs, self.unlabeled_idxs = self.get_labeled_index(labeled_classes, labeled_ratio)
             self.shrink_data(self.labeled_idxs)
