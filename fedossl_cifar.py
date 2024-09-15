@@ -168,7 +168,7 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
         # 双层优化（Bi-level optimization）中，创建一个中间模型 model_
         model_, _ = build_model(args)  # 从OpenLDN中创建一个新模型
         model_ = model_.cuda()
-        model_.load_state_dict(model.state_dict())  # 同步参数
+        model_.load_state_dict(model.state_dict(),strict=False)  # 同步参数
 
         feat_, logits_ = model_(x)
         logits_ = F.softmax(logits_, dim=1)
@@ -711,8 +711,8 @@ def main():
             param.requires_grad = False  # 冻结所有不包含 'linear' 和 'layer4' 的层
         if "centroids" in name:
             param.requires_grad = True  # 对于包含 'centroids' 的参数，解冻并允许更新
-    ###########################################
-    # 初始化客户端模型 ##############
+    ####################################################################################################
+    # 初始化客户端模型
     clients_model = []  # model->clients_model[client_id] 用于存储每个客户端的模型对象
     clients_optimizer = []  # optimizer->clients_optimizer[client_id] 用于存储每个客户端的优化器对象
     clients_scheduler = []  # scheduler->clients_scheduler[client_id] 用于存储每个客户端的学习率调度器对象
