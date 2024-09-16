@@ -70,7 +70,7 @@ def aggregate_parameters():
 
 
 def train(args, model, device, train_label_loader, train_unlabel_loader, optimizer, m, epoch, tf_writer, client_id,
-          global_round, simnet=None, optimizer_simnet=None):  # 增加simnet和optimizer_simnet
+          global_round, simnet=None, optimizer_simnet=None):  # 增加 simnet 和 optimizer_simnet
     # 初始化模型中的局部标记聚类中心为零。
     model.local_labeled_centroids.weight.data.zero_()  # model.local_labeled_centroids.weight.data: torch.Size([10, 512])
 
@@ -164,7 +164,7 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
         L_reg1 = L_reg1 / len(reg_label1)
         L_reg2 = L_reg2 / len(reg_label2)
 
-        ## OpenLDN新增部分 ##
+        '''OpenLDN新增部分'''
         # 双层优化（Bi-level optimization）中，创建一个中间模型 model_
         model_, _ = build_model(args)  # 从OpenLDN中创建一个新模型
         model_ = model_.cuda()
@@ -183,8 +183,7 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
         optimizer_simnet.zero_grad()
         loss_pair.backward(retain_graph=True)  # 反向传播成对相似性损失
         optimizer_simnet.step()
-
-        ## OpenLDN新增部分结束 ##
+        '''OpenLDN新增部分结束'''
 
         # 原有的FedoSSL部分
         pos_prob = prob2[:labeled_len]
@@ -229,8 +228,6 @@ def train(args, model, device, train_label_loader, train_unlabel_loader, optimiz
     tf_writer.add_scalars('client{}/loss'.format(client_id), {"ce": ce_losses.avg}, args.epochs * global_round + epoch)
     tf_writer.add_scalars('client{}/loss'.format(client_id), {"entropy": entropy_losses.avg},
                           args.epochs * global_round + epoch)
-
-
 
 
 
